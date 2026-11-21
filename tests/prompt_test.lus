@@ -1,0 +1,162 @@
+local ROOT = string.match(TEST_DIR, "^(.*)[/\\][^/\\]*$")
+local PACKAGES = string.match(ROOT, "^(.*)[/\\][^/\\]*$")
+pledge("load", "fs:read=" .. PACKAGES .. "/*")
+package.path = ROOT .. "/?.lus;" .. PACKAGES .. "/color/?.lus;" .. PACKAGES .. "/atmos-color/?.lus;" .. package.path
+package.preload["https://atmosp.here/2.0/color.lus"] = function() return require("color") end
+
+local prompt = require("prompt")
+local color = require("color")
+color.enable(false)
+
+-- An input that answers line by line, as a pipe does.
+local function lines(...)
+    local queue = { ... }
+    return {
+        read = function(self, fmt)
+            assert(fmt == "l")
+            return table.remove(queue, 1)
+        end,
+        isatty = function() return false end,
+    }
+end
+
+-- An input that behaves as a terminal and delivers the characters of `keys`.
+local function terminal(keys)
+    local pos = 1
+    local t = { raw = false, modes = {} }
+    function t:read(n)
+        assert(n == 1 and self.raw, "reads single keys in raw mode")
+        if pos > #keys then
+            return nil
+        end
+        local c = keys:sub(pos, pos)
+        pos = pos + 1
+        return c
+    end
+    function t:isatty() return true end
+    function t:setraw(on)
+        self.raw = on
+        self.modes[#self.modes + 1] = on
+        return self
+    end
+    return t
+end
+
+local function capture()
+    local out = { parts = {} }
+    function out:write(...)
+        for _, v in ipairs({ ... }) do
+            self.parts[#self.parts + 1] = tostring(v)
+        end
+    end
+    function out:text() return table.concat(self.parts) end
+    return out
+end
+
+local UP, DOWN, ENTER = "\27[A", "\27[B", "\r"
+
+local function text_test()
+    local out = capture()
+    prompt.use(lines("", "Ada"), out)
+    assert(prompt.text("Name?") == "Ada")
+    assert(out:text():find("an answer is required", 1, true))
+    prompt.use(lines(""), out)
+    assert(prompt.text("Name?", { default = "anon" }) == "anon")
+end
+
+local function validate_test()
+    local out = capture()
+    prompt.use(lines("ab", "abcd"), out)
+    local answer = prompt.text("Code?", {
+        validate = function(v) if #v < 3 then return false, "too short" end end,
+    })
+    assert(answer == "abcd")
+    assert(out:text():find("too short", 1, true))
+    local schema_like = {
+        check = function(self, v)
+            if v:match("^%d+$") then return true, tonumber(v) end
+            return false, { message = "digits only" }
+        end,
+    }
+    prompt.use(lines("x", "42"), capture())
+    assert(prompt.text("Port?", { validate = schema_like }) == 42)
+end
+
+local function confirm_test()
+    prompt.use(lines("maybe", "YES"), capture())
+    assert(prompt.confirm("Continue?") == true)
+    prompt.use(lines(""), capture())
+    assert(prompt.confirm("Continue?", false) == false)
+    prompt.use(lines("n"), capture())
+    assert(prompt.confirm("Continue?", true) == false)
+end
+
+local function number_test()
+    local out = capture()
+    prompt.use(lines("x", "1.5", "0", "7"), out)
+    assert(prompt.number("How many?", { integer = true, min = 1 }) == 7)
+    local text = out:text()
+    assert(text:find("enter a number", 1, true) and text:find("whole number", 1, true) and text:find("at least 1", 1, true))
+end
+
+local function select_lines_test()
+    local out = capture()
+    prompt.use(lines("9", "2"), out)
+    local value = prompt.select("Pick", { "red", { label = "Green", value = "g" }, "blue" })
+    assert(value == "g")
+    assert(out:text():find("  2) Green", 1, true))
+    prompt.use(lines(""), capture())
+    assert(prompt.select("Pick", { "a", "b" }, { default = "b" }) == "b")
+end
+
+local function multiselect_lines_test()
+    prompt.use(lines("1, 3 3"), capture())
+    local values = prompt.multiselect("Pick", { "a", "b", "c" })
+    assert(#values == 2 and values[1] == "a" and values[2] == "c")
+    prompt.use(lines("", "2"), capture())
+    values = prompt.multiselect("Pick", { "a", "b" }, { min = 1 })
+    assert(#values == 1 and values[1] == "b")
+end
+
+local function select_terminal_test()
+    local input = terminal(DOWN .. DOWN .. DOWN .. UP .. ENTER)
+    local out = capture()
+    prompt.use(input, out)
+    assert(prompt.select("Pick", { "a", "b", "c" }) == "c")
+    assert(input.modes[1] == true and input.modes[2] == false)
+    assert(out:text():find("❯ c", 1, true))
+end
+
+local function multiselect_terminal_test()
+    prompt.use(terminal(" " .. DOWN .. DOWN .. " " .. ENTER), capture())
+    local values = prompt.multiselect("Pick", { "a", "b", "c" }, { defaults = { "b" } })
+    assert(#values == 3)
+end
+
+local function password_terminal_test()
+    local out = capture()
+    prompt.use(terminal("s3x\127cret" .. ENTER), out)
+    assert(prompt.password("Password?", { mask = "*" }) == "s3cret")
+    assert(not out:text():find("cret", 1, true), "the password is not echoed")
+    assert(out:text():find("***\b \b****", 1, true), "one mask per key, erased on backspace")
+end
+
+local function password_lines_test()
+    prompt.use(lines("hunter2"), capture())
+    assert(prompt.password("Password?") == "hunter2")
+end
+
+local function ctrl_c_restores_terminal_test()
+    local input = terminal("ab\3")
+    prompt.use(input, capture())
+    local ok, err = catch prompt.password("Password?")
+    assert(not ok and prompt.iscancel(err))
+    assert(input.raw == false, "raw mode is switched off")
+end
+
+local function end_of_input_test()
+    prompt.use(lines(), capture())
+    local ok, err = catch prompt.text("Name?")
+    assert(not ok and prompt.iscancel(err) and err.message == "end of input")
+    prompt.use()
+end

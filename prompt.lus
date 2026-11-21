@@ -1,0 +1,454 @@
+--- Asks questions on the terminal.
+---
+--- `prompt.text`, `prompt.password`, `prompt.confirm`, `prompt.number`,
+--- `prompt.select`, and `prompt.multiselect` each ask one question and
+--- return the answer. On a terminal, menus move with the arrow keys and
+--- passwords stay hidden. When standard input is not a terminal, every
+--- prompt reads whole lines, so a script or a test can answer through a
+--- pipe.
+---
+--- @package prompt
+--- @version 0.1.0
+--- @lus 2.0
+--- @license 0BSD
+--- @repository https://github.com/lus-lang/atmos-prompt
+
+local color = require("https://atmosp.here/2.0/color.lus")
+
+local M = {}
+
+local input, output = io.stdin, io.stdout
+
+--- Replaces the input and the output of every prompt.
+---
+--- `input` needs `read`, and `isatty` and `setraw` for raw mode. `output`
+--- needs `write`. Tests pass tables with these methods. With no arguments,
+--- the prompts use standard input and standard output again.
+--- @param new_input table? The input handle.
+--- @param new_output table? The output handle.
+function M.use(new_input, new_output)
+    input = new_input or io.stdin
+    output = new_output or io.stdout
+end
+
+local PromptError = {}
+PromptError.__index = PromptError
+PromptError.__tostring = function(e) return e.message end
+
+local function cancel(message)
+    error(setmetatable({ code = "cancelled", message = message or "prompt cancelled" }, PromptError), 0)
+end
+
+--- Returns true if `value` is the error object that a cancelled prompt
+--- raises.
+---
+--- A prompt is cancelled by Ctrl-C in raw mode and by the end of the input.
+--- The error object has the code `"cancelled"` and a `message`.
+--- @param value any The value to test.
+--- @return boolean
+function M.iscancel(value)
+    return getmetatable(value) == PromptError
+end
+
+local function write(...)
+    output:write(...)
+    if output.flush then
+        output:flush()
+    end
+end
+
+local function is_terminal()
+    return input.isatty ~= nil and input.setraw ~= nil and input:isatty()
+end
+
+local function read_line()
+    local line = input:read("l")
+    if line == nil then
+        cancel("end of input")
+    end
+    return line
+end
+
+-- Runs `fn` with the input in raw mode and restores it afterward, also when
+-- `fn` raises.
+local function raw(fn)
+    input:setraw(true)
+    local ok, a, b = catch fn()
+    input:setraw(false)
+    if not ok then
+        error(a, 0)
+    end
+    return a, b
+end
+
+-- Reads one key in raw mode. Escape sequences of arrow keys return
+-- "up", "down", "left", or "right".
+local ARROWS = { A = "up", B = "down", C = "right", D = "left" }
+
+local function read_key()
+    local c = input:read(1)
+    if c == nil then
+        cancel("end of input")
+    end
+    if c == "\3" then
+        cancel()
+    end
+    if c == "\27" then
+        local b = input:read(1)
+        if b == "[" or b == "O" then
+            local k = input:read(1)
+            return ARROWS[k] or "escape"
+        end
+        return "escape"
+    end
+    if c == "\r" or c == "\n" then
+        return "enter"
+    end
+    if c == "\127" or c == "\8" then
+        return "backspace"
+    end
+    if c == " " then
+        return "space"
+    end
+    return c
+end
+
+-- Checks an answer with a validate option, which is a function or a value
+-- with a `check` method. Returns the value, or nil and a message.
+local function validate(check, value)
+    if check == nil then
+        return value
+    end
+    if type(check) == "table" and check.check then
+        local ok, result = check:check(value)
+        if ok then
+            return result
+        end
+        return nil, result.message or tostring(result)
+    end
+    local result, message = check(value)
+    if result == true or result == nil and message == nil then
+        return value
+    end
+    if result == false or result == nil then
+        return nil, message or "invalid answer"
+    end
+    return nil, tostring(result)
+end
+
+local function question_line(question, hint)
+    return color.bold(question) .. (hint and (" " .. color.dim(hint)) or "") .. " "
+end
+
+local function ask(question, hint, parse, check)
+    while true do
+        write(question_line(question, hint))
+        local value, message = parse(read_line())
+        if value ~= nil then
+            local final
+            final, message = validate(check, value)
+            if final ~= nil then
+                return final
+            end
+        end
+        write(color.red(message or "invalid answer"), "\n")
+    end
+end
+
+--- Asks for a line of text and returns it.
+---
+--- An empty answer returns `options.default` when it is given and asks
+--- again otherwise. `options.validate` is a function or a schema. A function
+--- returns `true` or nothing to accept the answer, and `false` and a message,
+--- or a message alone, to reject it. A rejected answer prints the message and
+--- asks again.
+--- @param question string The question.
+--- @param options table? `default` and `validate`.
+--- @return string
+function M.text(question, options)
+    options = options or {}
+    local default = options.default
+    return ask(question, default and `($default)`, function(line)
+        if line == "" then
+            if default ~= nil then
+                return default
+            end
+            return nil, "an answer is required"
+        end
+        return line
+    end, options.validate)
+end
+
+--- Asks for a secret and returns it.
+---
+--- On a terminal the answer is hidden. With `options.mask`, every character
+--- shows as that string, such as `"*"`. Elsewhere the answer is read as a
+--- line. `options.validate` works as in `prompt.text`.
+--- @param question string The question.
+--- @param options table? `mask` and `validate`.
+--- @return string
+function M.password(question, options)
+    options = options or {}
+    if not is_terminal() then
+        return M.text(question, { validate = options.validate })
+    end
+    while true do
+        write(question_line(question))
+        local text = raw(function()
+            local chars = {}
+            while true do
+                local key = read_key()
+                if key == "enter" then
+                    return table.concat(chars)
+                elseif key == "backspace" then
+                    if #chars > 0 then
+                        chars[#chars] = nil
+                        if options.mask then
+                            write("\b \b")
+                        end
+                    end
+                elseif key == "space" then
+                    chars[#chars + 1] = " "
+                    if options.mask then write(options.mask) end
+                elseif #key == 1 then
+                    chars[#chars + 1] = key
+                    if options.mask then write(options.mask) end
+                end
+            end
+        end)
+        write("\n")
+        local value, message = validate(options.validate, text)
+        if value ~= nil and text ~= "" then
+            return value
+        end
+        write(color.red(message or "an answer is required"), "\n")
+    end
+end
+
+local YES = { y = true, yes = true }
+local NO = { n = false, no = false }
+
+--- Asks a yes or no question and returns a boolean.
+---
+--- `y` and `yes` answer `true`, `n` and `no` answer `false`, in any case.
+--- An empty answer returns `default` when it is given.
+--- @param question string The question.
+--- @param default boolean? The answer to an empty line.
+--- @return boolean
+function M.confirm(question, default)
+    local hint = default == true and "(Y/n)" or default == false and "(y/N)" or "(y/n)"
+    return ask(question, hint, function(line)
+        local word = line:lower():match("^%s*(.-)%s*$")
+        if word == "" and default ~= nil then
+            return default
+        end
+        if YES[word] then
+            return true
+        end
+        if NO[word] == false then
+            return false
+        end
+        return nil, "answer yes or no"
+    end)
+end
+
+--- Asks for a number and returns it.
+---
+--- `options.integer` accepts only integers. `options.min` and `options.max`
+--- bound the answer. An empty answer returns `options.default` when it is
+--- given.
+--- @param question string The question.
+--- @param options table? `default`, `min`, `max`, `integer`, and `validate`.
+--- @return number
+function M.number(question, options)
+    options = options or {}
+    local default = options.default
+    return ask(question, default and `($default)`, function(line)
+        if line == "" and default ~= nil then
+            return default
+        end
+        local n = tonumber(line)
+        if n == nil then
+            return nil, "enter a number"
+        end
+        if options.integer then
+            n = math.tointeger(n)
+            if n == nil then
+                return nil, "enter a whole number"
+            end
+        end
+        if options.min and n < options.min then
+            return nil, `enter a number of at least $(options.min)`
+        end
+        if options.max and n > options.max then
+            return nil, `enter a number of at most $(options.max)`
+        end
+        return n
+    end, options.validate)
+end
+
+-- Choices are strings or tables with `label` and `value`.
+local function normalize(choices)
+    local out = {}
+    for i, c in ipairs(choices) do
+        if type(c) == "table" then
+            out[i] = { label = c.label or tostring(c.value), value = c.value == nil and c.label or c.value }
+        else
+            out[i] = { label = tostring(c), value = c }
+        end
+    end
+    if #out == 0 then
+        error("prompt: no choices", 3)
+    end
+    return out
+end
+
+local function index_of(list, value)
+    for i, c in ipairs(list) do
+        if c.value == value then
+            return i
+        end
+    end
+    return nil
+end
+
+-- Draws a menu and moves the cursor back to its first line, so the next
+-- draw replaces it.
+local function draw_menu(list, cursor, selected, first)
+    if not first then
+        write("\27[", #list, "A")
+    end
+    for i, c in ipairs(list) do
+        local pointer = i == cursor and color.cyan("❯ ") or "  "
+        local mark = ""
+        if selected then
+            mark = selected[i] and color.green("◉ ") or "◯ "
+        end
+        local label = i == cursor and color.cyan(c.label) or c.label
+        write("\r\27[K", pointer, mark, label, "\n")
+    end
+end
+
+local function menu(question, list, cursor, selected, hint)
+    write(question_line(question, hint), "\n")
+    return raw(function()
+        draw_menu(list, cursor, selected, true)
+        while true do
+            local key = read_key()
+            if key == "up" or key == "k" then
+                cursor = cursor == 1 and #list or cursor - 1
+            elseif key == "down" or key == "j" then
+                cursor = cursor == #list and 1 or cursor + 1
+            elseif key == "space" and selected then
+                selected[cursor] = not selected[cursor] or nil
+            elseif key == "enter" then
+                return cursor
+            end
+            draw_menu(list, cursor, selected, false)
+        end
+    end)
+end
+
+--- Asks for one of `choices` and returns its value.
+---
+--- A choice is a string, or a table with `label` and `value`. On a terminal
+--- the arrow keys move through the choices and Enter picks one. Elsewhere
+--- the choices are numbered and the answer is a number. `options.default` is
+--- the value that an empty answer picks, and the starting position of the
+--- cursor.
+--- @param question string The question.
+--- @param choices table The choices.
+--- @param options table? `default`.
+--- @return any
+function M.select(question, choices, options)
+    options = options or {}
+    local list = normalize(choices)
+    local start = options.default ~= nil and index_of(list, options.default) or nil
+    if is_terminal() then
+        return list[menu(question, list, start or 1, nil)].value
+    end
+    for i, c in ipairs(list) do
+        write(`  $i) $(c.label)\n`)
+    end
+    return ask(question, start and `($start)` or `(1-$(#list))`, function(line)
+        if line == "" and start then
+            return list[start].value
+        end
+        local n = math.tointeger(tonumber(line))
+        if n == nil or list[n] == nil then
+            return nil, `enter a number from 1 to $(#list)`
+        end
+        return list[n].value
+    end)
+end
+
+--- Asks for any number of `choices` and returns the list of their values.
+---
+--- On a terminal the arrow keys move, Space toggles a choice, and Enter
+--- ends. Elsewhere the answer is a list of numbers separated by commas or
+--- spaces. `options.defaults` lists the values selected at the start.
+--- `options.min` is the smallest number of choices, 0 by default.
+--- @param question string The question.
+--- @param choices table The choices.
+--- @param options table? `defaults` and `min`.
+--- @return table
+function M.multiselect(question, choices, options)
+    options = options or {}
+    local list = normalize(choices)
+    local min = options.min or 0
+    local selected = {}
+    for _, v in ipairs(options.defaults or {}) do
+        local i = index_of(list, v)
+        if i then
+            selected[i] = true
+        end
+    end
+    local function collect()
+        local out = {}
+        for i, c in ipairs(list) do
+            if selected[i] then
+                out[#out + 1] = c.value
+            end
+        end
+        return out
+    end
+    if is_terminal() then
+        while true do
+            menu(question, list, 1, selected, "(space to toggle, enter to finish)")
+            local out = collect()
+            if #out >= min then
+                return out
+            end
+            write(color.red(`choose at least $min`), "\n")
+        end
+    end
+    for i, c in ipairs(list) do
+        write(`  $i) $(c.label)\n`)
+    end
+    return ask(question, "(numbers separated by commas)", function(line)
+        if line:match("^%s*$") then
+            local out = collect()
+            if #out >= min then
+                return out
+            end
+            return nil, `choose at least $min`
+        end
+        local out, seen = {}, {}
+        for word in line:gmatch("[^,%s]+") do
+            local n = math.tointeger(tonumber(word))
+            if n == nil or list[n] == nil then
+                return nil, `'$word' is not a number from 1 to $(#list)`
+            end
+            if not seen[n] then
+                seen[n] = true
+                out[#out + 1] = list[n].value
+            end
+        end
+        if #out < min then
+            return nil, `choose at least $min`
+        end
+        return out
+    end)
+end
+
+return M

@@ -2,7 +2,16 @@ local ROOT = string.match(TEST_DIR, "^(.*)[/\\][^/\\]*$")
 local PACKAGES = string.match(ROOT, "^(.*)[/\\][^/\\]*$")
 pledge("load", "fs:read=" .. PACKAGES .. "/*")
 package.path = ROOT .. "/?.lus;" .. PACKAGES .. "/color/?.lus;" .. PACKAGES .. "/atmos-color/?.lus;" .. package.path
-package.preload["https://atmosp.here/2.0/color.lus"] = function() return require("color") end
+-- The package requires color by its atmosphere URL. A URL require goes to
+-- the remote loader before package.preload, so the tests replace require to
+-- load the checkout next to this one in its place.
+local real_require = require
+_G.require = function(name)
+    if name == "https://atmosp.here/2.0/color.lus" then
+        return real_require("color")
+    end
+    return real_require(name)
+end
 
 local prompt = require("prompt")
 local color = require("color")

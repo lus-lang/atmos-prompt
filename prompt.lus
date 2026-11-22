@@ -4,11 +4,11 @@
 --- `prompt.select`, and `prompt.multiselect` each ask one question and
 --- return the answer. On a terminal, menus move with the arrow keys and
 --- passwords stay hidden. When standard input is not a terminal, every
---- prompt reads whole lines, so a script or a test can answer through a
---- pipe.
+--- prompt reads whole lines, so a script or a test can supply the answers
+--- on a pipe.
 ---
 --- @package prompt
---- @version 0.1.0
+--- @version 1.0.0
 --- @lus 2.0
 --- @license 0BSD
 --- @repository https://github.com/lus-lang/atmos-prompt
@@ -21,9 +21,11 @@ local input, output = io.stdin, io.stdout
 
 --- Replaces the input and the output of every prompt.
 ---
---- `input` needs `read`, and `isatty` and `setraw` for raw mode. `output`
---- needs `write`. Tests pass tables with these methods. With no arguments,
---- the prompts use standard input and standard output again.
+--- `input` must have a `read` method. The prompts use raw mode only when
+--- `input` also has `isatty` and `setraw` methods and `isatty` returns
+--- true. `output` must have a `write` method. A test passes tables that
+--- have these methods. Called with no arguments, `prompt.use` restores
+--- standard input and standard output.
 --- @param new_input table? The input handle.
 --- @param new_output table? The output handle.
 function M.use(new_input, new_output)
@@ -137,7 +139,7 @@ local function validate(check, value)
 end
 
 local function question_line(question, hint)
-    return color.bold(question) .. (hint and (" " .. color.dim(hint)) or "") .. " "
+    return `$(color.bold(question))$(hint and (" " .. color.dim(hint)) or "") `
 end
 
 local function ask(question, hint, parse, check)
@@ -158,10 +160,11 @@ end
 --- Asks for a line of text and returns it.
 ---
 --- An empty answer returns `options.default` when it is given and asks
---- again otherwise. `options.validate` is a function or a schema. A function
---- returns `true` or nothing to accept the answer, and `false` and a message,
---- or a message alone, to reject it. A rejected answer prints the message and
---- asks again.
+--- again otherwise. `options.validate` is a function or a value with a
+--- `check` method, such as a schema. A function that returns `true` or
+--- nothing accepts the answer. A function that returns `false` and a
+--- message, or a message alone, rejects it, so the prompt prints the message
+--- and asks again.
 --- @param question string The question.
 --- @param options table? `default` and `validate`.
 --- @return string
@@ -181,9 +184,9 @@ end
 
 --- Asks for a secret and returns it.
 ---
---- On a terminal the answer is hidden. With `options.mask`, every character
---- shows as that string, such as `"*"`. Elsewhere the answer is read as a
---- line. `options.validate` works as in `prompt.text`.
+--- On a terminal the answer is hidden, or each character shows as the
+--- string `options.mask`, such as `"*"`, when that option is given. Elsewhere
+--- the answer is read as a line. `options.validate` works as in `prompt.text`.
 --- @param question string The question.
 --- @param options table? `mask` and `validate`.
 --- @return string
@@ -192,30 +195,31 @@ function M.password(question, options)
     if not is_terminal() then
         return M.text(question, { validate = options.validate })
     end
+    local function read_secret()
+        local chars = {}
+        while true do
+            local key = read_key()
+            if key == "enter" then
+                return table.concat(chars)
+            elseif key == "backspace" then
+                if #chars > 0 then
+                    chars[#chars] = nil
+                    if options.mask then
+                        write("\b \b")
+                    end
+                end
+            elseif key == "space" then
+                chars[#chars + 1] = " "
+                if options.mask then write(options.mask) end
+            elseif #key == 1 then
+                chars[#chars + 1] = key
+                if options.mask then write(options.mask) end
+            end
+        end
+    end
     while true do
         write(question_line(question))
-        local text = raw(function()
-            local chars = {}
-            while true do
-                local key = read_key()
-                if key == "enter" then
-                    return table.concat(chars)
-                elseif key == "backspace" then
-                    if #chars > 0 then
-                        chars[#chars] = nil
-                        if options.mask then
-                            write("\b \b")
-                        end
-                    end
-                elseif key == "space" then
-                    chars[#chars + 1] = " "
-                    if options.mask then write(options.mask) end
-                elseif #key == 1 then
-                    chars[#chars + 1] = key
-                    if options.mask then write(options.mask) end
-                end
-            end
-        end)
+        local text = raw(read_secret)
         write("\n")
         local value, message = validate(options.validate, text)
         if value ~= nil and text ~= "" then
@@ -230,8 +234,9 @@ local NO = { n = false, no = false }
 
 --- Asks a yes or no question and returns a boolean.
 ---
---- `y` and `yes` answer `true`, `n` and `no` answer `false`, in any case.
---- An empty answer returns `default` when it is given.
+--- The answers `y` and `yes` return `true` and the answers `n` and `no`
+--- return `false`, in any letter case. An empty answer returns `default`
+--- when it is given. Any other answer prints a message and asks again.
 --- @param question string The question.
 --- @param default boolean? The answer to an empty line.
 --- @return boolean
@@ -254,9 +259,10 @@ end
 
 --- Asks for a number and returns it.
 ---
---- `options.integer` accepts only integers. `options.min` and `options.max`
---- bound the answer. An empty answer returns `options.default` when it is
---- given.
+--- With `options.integer` set, the answer must be an integer.
+--- `options.min` and `options.max` are the smallest and the largest answer
+--- accepted. An empty answer returns `options.default` when it is given.
+--- Any rejected answer prints a message and asks again.
 --- @param question string The question.
 --- @param options table? `default`, `min`, `max`, `integer`, and `validate`.
 --- @return number
@@ -354,8 +360,8 @@ end
 --- A choice is a string, or a table with `label` and `value`. On a terminal
 --- the arrow keys move through the choices and Enter picks one. Elsewhere
 --- the choices are numbered and the answer is a number. `options.default` is
---- the value that an empty answer picks, and the starting position of the
---- cursor.
+--- the value that an empty answer picks, which is also where the cursor
+--- starts.
 --- @param question string The question.
 --- @param choices table The choices.
 --- @param options table? `default`.
@@ -384,10 +390,10 @@ end
 
 --- Asks for any number of `choices` and returns the list of their values.
 ---
---- On a terminal the arrow keys move, Space toggles a choice, and Enter
---- ends. Elsewhere the answer is a list of numbers separated by commas or
---- spaces. `options.defaults` lists the values selected at the start.
---- `options.min` is the smallest number of choices, 0 by default.
+--- On a terminal the arrow keys move the cursor, Space toggles a choice, and
+--- Enter finishes. Elsewhere the answer is a list of numbers separated by
+--- commas or spaces. `options.defaults` lists the values selected at the
+--- start. `options.min` is the smallest number of choices, 0 by default.
 --- @param question string The question.
 --- @param choices table The choices.
 --- @param options table? `defaults` and `min`.

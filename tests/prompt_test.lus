@@ -1,7 +1,7 @@
 local ROOT = string.match(TEST_DIR, "^(.*)[/\\][^/\\]*$")
 local PACKAGES = string.match(ROOT, "^(.*)[/\\][^/\\]*$")
-pledge("load", "fs:read=" .. PACKAGES .. "/*")
-package.path = ROOT .. "/?.lus;" .. PACKAGES .. "/color/?.lus;" .. PACKAGES .. "/atmos-color/?.lus;" .. package.path
+pledge("load", `fs:read=$PACKAGES/*`)
+package.path = `$ROOT/?.lus;$PACKAGES/color/?.lus;$PACKAGES/atmos-color/?.lus;$(package.path)`
 -- The package requires color by its atmosphere URL. The tests load the
 -- checkout next to this one in its place.
 package.preload["https://atmosp.here/2.0/color.lus"] = function() return require("color") end
@@ -130,7 +130,7 @@ local function select_terminal_test()
 end
 
 local function multiselect_terminal_test()
-    prompt.use(terminal(" " .. DOWN .. DOWN .. " " .. ENTER), capture())
+    prompt.use(terminal(` $DOWN$DOWN $ENTER`), capture())
     local values = prompt.multiselect("Pick", { "a", "b", "c" }, { defaults = { "b" } })
     assert(#values == 3)
 end

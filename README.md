@@ -1,6 +1,8 @@
 # prompt
 
-Asks questions on the terminal, with arrow key menus and hidden passwords on a terminal and line input through a pipe.
+`prompt` asks the user questions and returns the answers. On a terminal it shows menus that move with the arrow keys and hides passwords as they are typed. When standard input is a pipe, each answer is one line, so a script or a test can supply the answers.
+
+The following example asks for the name and the template of a new project, then asks for confirmation before creating it.
 
 ```lus nocheck
 local prompt = require("https://atmosp.here/2.0/prompt.lus")
@@ -12,6 +14,6 @@ if prompt.confirm(`Create $name as a $kind?`, true) then
 end
 ```
 
-The package requires Lus 2.0. It declares no permissions. It calls no `pledge` of its own, so the program that loads it keeps control of its permissions.
+The package requires Lus 2.0 and declares no permissions. It never calls `pledge`, so the program that loads it keeps control of its permissions.
 
-The reference is in the doc comments of `prompt.lus`. Run `lus doc prompt.lus` to print it.
+The reference is in the doc comments of `prompt.lus`, which `lus doc prompt.lus` prints.

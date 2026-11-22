@@ -398,8 +398,7 @@ function M.multiselect(question, choices, options)
     local min = options.min or 0
     local selected = {}
     for _, v in ipairs(options.defaults or {}) do
-        local i = index_of(list, v)
-        if i then
+        if i = index_of(list, v) then
             selected[i] = true
         end
     end

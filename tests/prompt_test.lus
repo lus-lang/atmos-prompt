@@ -2,9 +2,12 @@ local ROOT = string.match(TEST_DIR, "^(.*)[/\\][^/\\]*$")
 local PACKAGES = string.match(ROOT, "^(.*)[/\\][^/\\]*$")
 pledge("load", `fs:read=$PACKAGES/*`)
 package.path = `$ROOT/?.lus;$PACKAGES/color/?.lus;$PACKAGES/atmos-color/?.lus;$(package.path)`
+
 -- The package requires color by its atmosphere URL. The tests load the
 -- checkout next to this one in its place.
-package.preload["https://atmosp.here/2.0/color.lus"] = function() return require("color") end
+package.preload["https://atmosp.here/2.0/color.lus"] = function()
+    return require("color")
+end
 
 local prompt = require("prompt")
 local color = require("color")
@@ -13,12 +16,15 @@ color.enable(false)
 -- An input that answers line by line, as a pipe does.
 local function lines(...)
     local queue = { ... }
+
     return {
         read = function(self, fmt)
             assert(fmt == "l")
             return table.remove(queue, 1)
         end,
-        isatty = function() return false end,
+        isatty = function()
+            return false
+        end,
     }
 end
 
@@ -26,32 +32,45 @@ end
 local function terminal(keys)
     local pos = 1
     local t = { raw = false, modes = {} }
+
     function t:read(n)
         assert(n == 1 and self.raw, "reads single keys in raw mode")
+
         if pos > #keys then
             return nil
         end
+
         local c = keys:sub(pos, pos)
         pos = pos + 1
         return c
     end
-    function t:isatty() return true end
+
+    function t:isatty()
+        return true
+    end
+
     function t:setraw(on)
         self.raw = on
         self.modes[#self.modes + 1] = on
         return self
     end
+
     return t
 end
 
 local function capture()
     local out = { parts = {} }
+
     function out:write(...)
         for _, v in ipairs({ ... }) do
             self.parts[#self.parts + 1] = tostring(v)
         end
     end
-    function out:text() return table.concat(self.parts) end
+
+    function out:text()
+        return table.concat(self.parts)
+    end
+
     return out
 end
 
@@ -69,17 +88,28 @@ end
 local function validate_test()
     local out = capture()
     prompt.use(lines("ab", "abcd"), out)
+
     local answer = prompt.text("Code?", {
-        validate = function(v) if #v < 3 then return false, "too short" end end,
+        validate = function(v)
+            if #v < 3 then
+                return false, "too short"
+            end
+        end,
     })
+
     assert(answer == "abcd")
     assert(out:text():find("too short", 1, true))
+
     local schema_like = {
         check = function(self, v)
-            if v:match("^%d+$") then return true, tonumber(v) end
+            if v:match("^%d+$") then
+                return true, tonumber(v)
+            end
+
             return false, { message = "digits only" }
         end,
     }
+
     prompt.use(lines("x", "42"), capture())
     assert(prompt.text("Port?", { validate = schema_like }) == 42)
 end
@@ -98,7 +128,11 @@ local function number_test()
     prompt.use(lines("x", "1.5", "0", "7"), out)
     assert(prompt.number("How many?", { integer = true, min = 1 }) == 7)
     local text = out:text()
-    assert(text:find("enter a number", 1, true) and text:find("whole number", 1, true) and text:find("at least 1", 1, true))
+    assert(
+        text:find("enter a number", 1, true)
+            and text:find("whole number", 1, true)
+            and text:find("at least 1", 1, true)
+    )
 end
 
 local function select_lines_test()
@@ -121,7 +155,7 @@ local function multiselect_lines_test()
 end
 
 local function select_terminal_test()
-    local input = terminal(DOWN .. DOWN .. DOWN .. UP .. ENTER)
+    local input = terminal(`$DOWN$DOWN$DOWN$UP$ENTER`)
     local out = capture()
     prompt.use(input, out)
     assert(prompt.select("Pick", { "a", "b", "c" }) == "c")
@@ -137,7 +171,7 @@ end
 
 local function password_terminal_test()
     local out = capture()
-    prompt.use(terminal("s3x\127cret" .. ENTER), out)
+    prompt.use(terminal(`s3x\127cret$ENTER`), out)
     assert(prompt.password("Password?", { mask = "*" }) == "s3cret")
     assert(not out:text():find("cret", 1, true), "the password is not echoed")
     assert(out:text():find("***\b \b****", 1, true), "one mask per key, erased on backspace")
